@@ -344,6 +344,7 @@ async def main():
 	current_balances = {}
 	account_check_in_details = {}  # 存储每个账号的签到详情
 	need_notify = False  # 是否需要发送通知
+	has_failure = False  # 是否有账号签到失败
 	balance_changed = False  # 余额是否有变化
 
 	for i, account in enumerate(accounts):
@@ -358,6 +359,7 @@ async def main():
 			if not success:
 				should_notify_this_account = True
 				need_notify = True
+				has_failure = True
 				account_name = account.get_display_name(i)
 				print(f'[NOTIFY] {account_name} failed, will send notification')
 
@@ -413,6 +415,7 @@ async def main():
 			account_name = account.get_display_name(i)
 			print(f'[FAILED] {account_name} processing exception: {e}')
 			need_notify = True  # 异常也需要通知
+			has_failure = True
 			notification_content.append(f'[FAIL] {account_name} exception: {str(e)[:50]}...')
 
 	# 检查余额变化
@@ -450,7 +453,33 @@ async def main():
 	if current_balance_hash:
 		save_balance_hash(current_balance_hash)
 
-	if need_notify and notification_content:
+	# 根据 NOTIFY_ON 配置决定是否发送通知
+	# 可选值：always（始终通知）、failure（仅失败时通知）、never（从不通知）
+	# 默认：失败或余额变化时通知
+	notify_on = os.getenv('NOTIFY_ON', '').lower()
+	if notify_on == 'never':
+		should_send_notification = False
+		print('[INFO] NOTIFY_ON=never, notification skipped')
+	elif notify_on == 'always':
+		should_send_notification = True
+	elif notify_on == 'failure':
+		should_send_notification = has_failure
+		if not has_failure:
+			print('[INFO] NOTIFY_ON=failure, all accounts successful, notification skipped')
+	else:
+		# 默认：失败或余额变化时通知
+		should_send_notification = need_notify
+
+	# 对于 always 模式，如果通知内容为空（全部成功且余额未变化），补充所有账号的签到详情
+	if notify_on == 'always' and not notification_content:
+		for i, account in enumerate(accounts):
+			account_key = f'account_{i + 1}'
+			if account_key in account_check_in_details:
+				notification_content.append(format_check_in_notification(account_check_in_details[account_key]))
+			else:
+				notification_content.append(f'[SUCCESS] {account.get_display_name(i)}')
+
+	if should_send_notification and notification_content:
 		# 构建通知内容
 		summary = [
 			'[STATS] Check-in result statistics:',
@@ -471,7 +500,7 @@ async def main():
 
 		print(notify_content)
 		notify.push_message('AnyRouter Check-in Alert', notify_content, msg_type='text')
-		print('[NOTIFY] Notification sent due to failures or balance changes')
+		print('[NOTIFY] Notification sent')
 	else:
 		print('[INFO] All accounts successful and no balance changes detected, notification skipped')
 
